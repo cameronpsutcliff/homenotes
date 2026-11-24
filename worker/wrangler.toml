@@ -1,0 +1,13 @@
+name = "homenotes-api"
+main = "src/index.js"
+compatibility_date = "2026-11-22"
+workers_dev = false
+
+routes = [
+  { pattern = "homenotes.cameronsutcliff.com", custom_domain = true }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "homenotes-db"
+database_id = "d29abbb5-9395-4e1a-abd5-b0b234d5261f"

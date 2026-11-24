@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "HomeNotes - Buyer Reality Check & Listing Comments",
+  "short_name": "HomeNotes",
+  "version": "1.1.0",
+  "description": "Platform-independent buyer comments, fair-value estimates, inflation checks, and tags across 7 major real estate sites.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "HomeNotes Settings & Recent Reality Checks",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://www.zillow.com/*",
+    "https://www.realtor.com/*",
+    "https://www.redfin.com/*",
+    "https://www.homes.com/*",
+    "https://www.trulia.com/*",
+    "https://www.har.com/*",
+    "https://realestatecenter.bankofamerica.com/*",
+    "https://homenotes.cameronsutcliff.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.zillow.com/*",
+        "https://www.realtor.com/*",
+        "https://www.redfin.com/*",
+        "https://www.homes.com/*",
+        "https://www.trulia.com/*",
+        "https://www.har.com/*",
+        "https://realestatecenter.bankofamerica.com/*"
+      ],
+      "js": ["lib/extractor.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
