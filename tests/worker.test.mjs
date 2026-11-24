@@ -39,6 +39,7 @@ function makeMockEnv() {
                     tags: args[11],
                     comment: args[12],
                     agrees: 0,
+                    flags: 0,
                     created_at: args[13],
                   });
                   return { success: true, meta: { last_row_id: id } };
@@ -46,6 +47,11 @@ function makeMockEnv() {
                 if (sql.startsWith('UPDATE comments SET agrees')) {
                   const row = rows.find((r) => r.id === args[0]);
                   if (row) row.agrees += 1;
+                  return { success: true };
+                }
+                if (sql.startsWith('UPDATE comments SET flags')) {
+                  const row = rows.find((r) => r.id === args[0]);
+                  if (row) row.flags = (row.flags || 0) + 1;
                   return { success: true };
                 }
                 return { success: true };
@@ -57,13 +63,14 @@ function makeMockEnv() {
                 return null;
               },
               async all() {
+                const visible = rows.filter((r) => (r.flags || 0) < 5);
                 if (sql.includes('LOWER(handle) = LOWER(?)')) {
-                  return { results: rows.filter((r) => r.handle.toLowerCase() === String(args[0]).toLowerCase()).reverse() };
+                  return { results: visible.filter((r) => r.handle.toLowerCase() === String(args[0]).toLowerCase()).reverse() };
                 }
                 if (sql.includes('WHERE address_key = ?')) {
-                  return { results: rows.filter((r) => r.address_key === args[0]).reverse() };
+                  return { results: visible.filter((r) => r.address_key === args[0]).reverse() };
                 }
-                return { results: [...rows].reverse() };
+                return { results: [...visible].reverse() };
               },
             };
           },
@@ -164,6 +171,26 @@ test('POST, GET, /api/recent, +1 agree, /health, and /privacy work cleanly', asy
   assert.equal(agreeRes.status, 200);
   const agreeData = await agreeRes.json();
   assert.equal(agreeData.agrees, 1);
+
+  // Price-cut tracker snapshot summary
+  assert.equal(data.summary.first_listed_price, 795000);
+  assert.equal(data.summary.highest_listed_price, 795000);
+
+  // Flagging 5 times auto-hides the comment
+  for (let i = 0; i < 5; i++) {
+    const fRes = await worker.fetch(
+      new Request('https://homenotes.cameronsutcliff.com/api/comments/1/flag', { method: 'POST' }),
+      env
+    );
+    assert.equal(fRes.status, 200);
+  }
+  const afterFlag = await (
+    await worker.fetch(
+      new Request('https://homenotes.cameronsutcliff.com/api/comments?address_key=1420%20North%20Hayden%20Lake%20Road%2C%20Hayden%2C%20ID%2083835'),
+      env
+    )
+  ).json();
+  assert.equal(afterFlag.comments.length, 0);
 
   const healthRes = await worker.fetch(new Request('https://homenotes.cameronsutcliff.com/health'), env);
   assert.equal(healthRes.status, 200);

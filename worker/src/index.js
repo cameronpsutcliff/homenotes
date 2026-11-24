@@ -110,8 +110,13 @@ export function computeSummary(rows) {
 
   const tagCounts = {};
   const sites = new Set();
+  const priceSnapshots = [];
   for (const r of rows) {
     if (r.site) sites.add(r.site);
+    const pNum = parsePriceNumber(r.listed_price_num ?? r.listed_price);
+    if (pNum) {
+      priceSnapshots.push({ price: pNum, created_at: r.created_at || '' });
+    }
     let parsed = [];
     if (Array.isArray(r.tags)) {
       parsed = r.tags;
@@ -127,12 +132,21 @@ export function computeSummary(rows) {
     }
   }
 
+  priceSnapshots.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  const firstSnapshot = priceSnapshots.length ? priceSnapshots[0] : null;
+  const highestListedPrice = priceSnapshots.length ? Math.max(...priceSnapshots.map((s) => s.price)) : null;
+  const lowestListedPrice = priceSnapshots.length ? Math.min(...priceSnapshots.map((s) => s.price)) : null;
+
   return {
     count,
     median_fair_value: medianFairValue,
     fair_value_count: fairValues.length,
     tag_counts: tagCounts,
     sites: Array.from(sites),
+    first_listed_price: firstSnapshot ? firstSnapshot.price : null,
+    first_comment_at: firstSnapshot ? firstSnapshot.created_at : null,
+    highest_listed_price: highestListedPrice,
+    lowest_listed_price: lowestListedPrice,
   };
 }
 
@@ -175,6 +189,51 @@ async function fetchFredMortgageRate() {
     return fallback;
   }
   return fallback;
+}
+
+async function fetchCensusGeocode(address) {
+  const clean = String(address || '').trim().slice(0, 200);
+  if (!clean) return { ok: false, error: 'address is required' };
+  const qs = new URLSearchParams({
+    address: clean,
+    benchmark: 'Public_AR_Current',
+    vintage: 'Current_Current',
+    format: 'json',
+  });
+  try {
+    const res = await fetch(
+      `https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress?${qs.toString()}`,
+      { cf: { cacheTtl: 604800, cacheEverything: true } }
+    );
+    if (!res.ok) return { ok: false, matched: false };
+    const data = await res.json();
+    const match = data?.result?.addressMatches?.[0];
+    if (!match) return { ok: true, matched: false };
+
+    const countyObj = match.geographies?.Counties?.[0] || {};
+    const stateObj = match.geographies?.States?.[0] || {};
+    const county = countyObj.NAME || countyObj.BASENAME || '';
+    const state = match.addressComponents?.state || stateObj.STUSAB || '';
+    const zip = match.addressComponents?.zip || '';
+    const matchedAddress = match.matchedAddress || clean;
+    const assessorQuery = [county, state, 'county assessor property search', matchedAddress].filter(Boolean).join(' ');
+
+    return {
+      ok: true,
+      matched: true,
+      matched_address: matchedAddress,
+      address_key: normalizeAddressKey(matchedAddress),
+      county,
+      state,
+      zip,
+      lat: match.coordinates?.y ?? null,
+      lon: match.coordinates?.x ?? null,
+      assessor_url: `https://www.google.com/search?q=${encodeURIComponent(assessorQuery)}`,
+      source: 'US Census Geocoder',
+    };
+  } catch {
+    return { ok: false, matched: false };
+  }
 }
 
 function privacyHtml() {
@@ -262,12 +321,19 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/health' && request.method === 'GET') {
-      return json({ ok: true, service: 'homenotes-api', version: '1.1.0' });
+      return json({ ok: true, service: 'homenotes-api', version: '1.2.0' });
     }
 
     if (url.pathname === '/api/market' && request.method === 'GET') {
       const market = await fetchFredMortgageRate();
       return json(market, 200, 'public, max-age=3600');
+    }
+
+    if (url.pathname === '/api/geocode' && request.method === 'GET') {
+      const address = url.searchParams.get('address') || '';
+      if (!address.trim()) return json({ error: 'address is required' }, 400);
+      const geo = await fetchCensusGeocode(address);
+      return json(geo, 200, 'public, max-age=86400');
     }
 
     if ((url.pathname === '/privacy' || url.pathname === '/privacy-policy') && request.method === 'GET') {
@@ -287,7 +353,7 @@ export default {
           `SELECT id, address_key, address_display, listed_price, listed_price_num, beds, baths, sqft,
                   listing_url, site, handle, fair_value, tags, comment, agrees, created_at
            FROM comments
-           WHERE LOWER(handle) = LOWER(?) AND scope = 'public' AND room_hash = ''
+           WHERE LOWER(handle) = LOWER(?) AND scope = 'public' AND room_hash = '' AND COALESCE(flags, 0) < 5
            ORDER BY created_at DESC
            LIMIT 50`
         )
@@ -305,7 +371,7 @@ export default {
         `SELECT id, address_key, address_display, listed_price, listed_price_num, beds, baths, sqft,
                 listing_url, site, handle, fair_value, tags, comment, agrees, created_at
          FROM comments
-         WHERE address_key = ? AND scope = 'public' AND room_hash = ''
+         WHERE address_key = ? AND scope = 'public' AND room_hash = '' AND COALESCE(flags, 0) < 5
          ORDER BY created_at DESC
          LIMIT 100`
       )
@@ -325,7 +391,7 @@ export default {
         `SELECT id, address_key, address_display, listed_price, site, handle, fair_value,
                 tags, comment, agrees, listing_url, created_at
          FROM comments
-         WHERE scope = 'public' AND room_hash = ''
+         WHERE scope = 'public' AND room_hash = '' AND COALESCE(flags, 0) < 5
          ORDER BY created_at DESC
          LIMIT 25`
       ).all();
@@ -396,6 +462,15 @@ export default {
       const row = await env.DB.prepare('SELECT id, agrees FROM comments WHERE id = ?').bind(id).first();
       if (!row) return json({ error: 'Comment not found' }, 404);
       return json({ ok: true, id: row.id, agrees: row.agrees });
+    }
+
+    const flagMatch = url.pathname.match(/^\/api\/comments\/(\d+)\/flag$/);
+    if (flagMatch && request.method === 'POST') {
+      const id = Number.parseInt(flagMatch[1], 10);
+      await env.DB.prepare('UPDATE comments SET flags = COALESCE(flags, 0) + 1 WHERE id = ?').bind(id).run();
+      const row = await env.DB.prepare('SELECT id, flags FROM comments WHERE id = ?').bind(id).first();
+      if (!row) return json({ error: 'Comment not found' }, 404);
+      return json({ ok: true, id: row.id, flags: row.flags, hidden: row.flags >= 5 });
     }
 
     return json({ error: 'Not found' }, 404);

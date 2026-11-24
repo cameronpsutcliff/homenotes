@@ -38,9 +38,11 @@
     authorFilter: null,
     authorComments: [],
     market: { mortgage_30y: 6.5, observation_date: '' },
+    geo: null,
     loading: false,
     error: '',
     agreedIds: new Set(),
+    flaggedIds: new Set(),
     lastUrl: '',
     hostEl: null,
     shadow: null,
@@ -107,6 +109,19 @@
       }
     } catch {
       // keep fallback 6.5%
+    }
+  }
+
+  async function fetchCensusGeocode() {
+    if (!state.meta || !state.meta.address) return;
+    try {
+      const res = await fetch(`${state.apiBase}/api/geocode?address=${encodeURIComponent(state.meta.address)}`);
+      if (res.ok) {
+        const d = await res.json();
+        if (d && d.matched) state.geo = d;
+      }
+    } catch {
+      // non-blocking
     }
   }
 
@@ -262,6 +277,17 @@
         display: flex; justify-content: space-between; align-items: center;
         padding: 8px 16px; background: #0b3a47; color: #a5f3fc; font-size: 12px; font-weight: 600;
       }
+      .hn-price-banner {
+        padding: 8px 16px; font-size: 11.5px; font-weight: 600; border-bottom: 1px solid #1a2231;
+      }
+      .hn-price-banner.cut { background: rgba(52,211,153,0.12); color: #34d399; }
+      .hn-price-banner.up { background: rgba(255,107,94,0.12); color: #ff6b5e; }
+      .hn-actions-row { display: inline-flex; gap: 5px; align-items: center; }
+      .hn-flag-btn {
+        background: transparent; color: #7a879c; border: 1px solid #1f2b3f;
+        border-radius: 5px; padding: 3px 7px; font-size: 10.5px; cursor: pointer;
+      }
+      .hn-flag-btn:hover, .hn-flag-btn.flagged { color: #ff6b5e; border-color: rgba(255,107,94,0.45); }
       .hn-list {
         flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px;
         min-height: 90px;
@@ -434,8 +460,30 @@
     const rate = state.market.mortgage_30y || 6.5;
     const askPmt = EXT.computeMonthlyPI(state.meta.listedPriceNum, rate);
     const fvPmt = summary.median_fair_value ? EXT.computeMonthlyPI(summary.median_fair_value, rate) : null;
-    const crossLinks = EXT.buildCrossSiteLinks(state.meta.address);
+    const crossLinks = EXT.buildCrossSiteLinks(state.meta.address).map((l) => {
+      if (l.label === 'County Tax' && state.geo && state.geo.assessor_url) {
+        return { label: state.geo.county ? `${state.geo.county} Tax` : 'County Tax', url: state.geo.assessor_url };
+      }
+      return l;
+    });
     const hist = EXT.computeHistoricalRealityCheck(state.priorPrice, state.priorYear, state.meta.listedPriceNum);
+
+    let priceTrackerHtml = '';
+    if (state.meta.listedPriceNum && summary.first_listed_price) {
+      const refPrice = summary.highest_listed_price && summary.highest_listed_price > state.meta.listedPriceNum
+        ? summary.highest_listed_price
+        : summary.first_listed_price;
+      const diff = state.meta.listedPriceNum - refPrice;
+      if (Math.abs(diff) >= 1000) {
+        const pct = Math.round((diff / refPrice) * 1000) / 10;
+        const dtStr = summary.first_comment_at ? ` since ${String(summary.first_comment_at).slice(0, 10)}` : '';
+        if (diff < 0) {
+          priceTrackerHtml = `<div class="hn-price-banner cut">Price Cut: ${EXT.formatCurrency(diff)} (${pct}%)${EXT.escapeHtml(dtStr)} (${EXT.formatCurrency(refPrice)} -> ${EXT.formatCurrency(state.meta.listedPriceNum)})</div>`;
+        } else {
+          priceTrackerHtml = `<div class="hn-price-banner up">Price Raised: +${EXT.formatCurrency(diff)} (+${pct}%)${EXT.escapeHtml(dtStr)} (${EXT.formatCurrency(refPrice)} -> ${EXT.formatCurrency(state.meta.listedPriceNum)})</div>`;
+        }
+      }
+    }
 
     const specsHtml = [
       state.meta.beds ? `<span>${EXT.escapeHtml(state.meta.beds)} bd</span>` : '',
@@ -461,11 +509,12 @@
                 const dt = String(c.created_at || '').slice(0, 10);
                 const tags = Array.isArray(c.tags) ? c.tags : [];
                 const voted = state.agreedIds.has(c.id);
+                const flagged = state.flaggedIds.has(c.id);
                 return `
                   <div class="hn-item">
                     <div class="hn-item-top">
                       <button class="hn-author-btn" data-author="${EXT.escapeHtml(c.handle)}" type="button" title="View all comments by ${EXT.escapeHtml(c.handle)}">${EXT.escapeHtml(c.handle)}</button>
-                      <span class="hn-snap">${EXT.escapeHtml(c.site)} &middot; ${EXT.escapeHtml(c.listed_price)} &middot; ${EXT.escapeHtml(dt)}</span>
+                      <span class="hn-snap">Listed at ${EXT.escapeHtml(c.listed_price)} &middot; ${EXT.escapeHtml(dt)} &middot; ${EXT.escapeHtml(c.site)}</span>
                     </div>
                     ${
                       state.authorFilter && c.address_display
@@ -482,9 +531,14 @@
                       <div class="hn-tags-row">
                         ${tags.map((t) => `<span class="hn-tag-pill ${tagClass(t)}">${EXT.escapeHtml(t)}</span>`).join('')}
                       </div>
-                      <button class="hn-agree-btn ${voted ? 'voted' : ''}" data-agree="${c.id}" type="button">
-                        +1 Agree (${c.agrees || 0})
-                      </button>
+                      <div class="hn-actions-row">
+                        <button class="hn-agree-btn ${voted ? 'voted' : ''}" data-agree="${c.id}" type="button">
+                          +1 Agree (${c.agrees || 0})
+                        </button>
+                        <button class="hn-flag-btn ${flagged ? 'flagged' : ''}" data-flag="${c.id}" type="button" title="Flag spam or abuse">
+                          ${flagged ? 'Flagged' : 'Flag'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 `;
@@ -513,12 +567,15 @@
             <div class="hn-specs">
               <span class="hn-price">${EXT.escapeHtml(state.meta.listedPrice)}</span>
               ${specsHtml}
+              ${state.geo && state.geo.county ? `<span>&middot;</span><span style="color:#a5f3fc;">${EXT.escapeHtml(state.geo.county)}${state.geo.state ? ', ' + EXT.escapeHtml(state.geo.state) : ''}</span>` : ''}
             </div>
             <div class="hn-cross">
               <span>Cross-check:</span>
               ${crossLinks.map((l) => `<a href="${EXT.escapeHtml(l.url)}" target="_blank" rel="noopener">${EXT.escapeHtml(l.label)}</a>`).join('')}
             </div>
           </div>
+
+          ${priceTrackerHtml}
 
           <div class="hn-summary">
             <div class="hn-stat-box">
@@ -677,6 +734,25 @@
       });
     });
 
+    s.querySelectorAll('[data-flag]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = Number(btn.getAttribute('data-flag'));
+        if (!id || state.flaggedIds.has(id)) return;
+        state.flaggedIds.add(id);
+        render();
+        try {
+          const res = await fetch(`${state.apiBase}/api/comments/${id}/flag`, { method: 'POST' });
+          if (res.ok) {
+            const d = await res.json();
+            if (d.hidden) await refreshComments();
+          }
+        } catch {
+          state.flaggedIds.delete(id);
+          render();
+        }
+      });
+    });
+
     const exportBtn = s.getElementById('hn-export');
     if (exportBtn) {
       exportBtn.addEventListener('click', async () => {
@@ -768,6 +844,7 @@
     if (!meta.addressKey) return;
 
     state.meta = meta;
+    state.geo = null;
     state.authorFilter = null;
     state.priorPrice = meta.priorSale?.price ? String(meta.priorSale.price) : '';
     state.priorYear = meta.priorSale?.year ? String(meta.priorSale.year) : '';
@@ -782,7 +859,7 @@
     }
 
     render();
-    await Promise.all([refreshComments(), fetchMarketRate()]);
+    await Promise.all([refreshComments(), fetchMarketRate(), fetchCensusGeocode()]);
     render();
   }
 

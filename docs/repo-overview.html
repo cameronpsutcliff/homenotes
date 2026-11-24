@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HomeNotes Repository Overview</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07090f; --card: #0c1119; --line: #1a2231; --line2: #263043;
+      --tx: #e6ecf4; --mu: #9aa7bb; --di: #7a879c;
+      --cy: #22d3ee; --gr: #34d399; --warn: #f0b429;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 36px 20px; background: var(--bg); color: var(--tx);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.6;
+    }
+    main { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+    .hero {
+      background: var(--card); border: 1px solid var(--line2); border-radius: 14px; padding: 26px 28px;
+    }
+    .kicker { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cy); font-weight: 700; }
+    h1 { margin: 6px 0 8px; font-size: 28px; }
+    .sub { color: var(--mu); margin: 0; font-size: 14.5px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px;
+    }
+    h2 { margin: 0 0 10px; font-size: 15px; color: var(--cy); }
+    ul { margin: 0; padding-left: 18px; color: var(--mu); font-size: 13.5px; }
+    li { margin-bottom: 6px; }
+    code { background: #121a28; color: var(--gr); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; color: var(--mu); }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+    th { color: var(--tx); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="kicker">cameronpsutcliff/homenotes &middot; Chrome MV3 + Cloudflare Worker &amp; D1</div>
+      <h1>HomeNotes</h1>
+      <p class="sub">Platform-independent buyer reality-check comments, price-cut tracking, live FRED 30-year mortgage math, and US Census county verification across 7 major US real estate portals.</p>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Extension Surface</h2>
+        <ul>
+          <li><code>extension/manifest.json</code>: MV3 manifest targeting 7 portals (Zillow, Redfin, Realtor, Homes.com, Trulia, HAR, BofA).</li>
+          <li><code>extension/lib/extractor.js</code>: JSON-LD + DOM extraction, cross-site address key normalization, CPI + 4% climb math, P&amp;I calculator.</li>
+          <li><code>extension/content.js</code>: Isolated Abyssal Shadow-DOM draggable pill and full-height docked side panel.</li>
+          <li><code>extension/popup.html</code>: Settings and recent community reality checks.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>Edge API ($0/mo)</h2>
+        <ul>
+          <li><code>worker/src/index.js</code>: Deployed at <code>https://homenotes.cameronsutcliff.com</code>.</li>
+          <li><code>GET /api/comments</code>: Lookup by normalized address or author handle + Price-Cut summary.</li>
+          <li><code>GET /api/geocode</code>: US Census Geocoder (canonical USPS address + County Assessor link).</li>
+          <li><code>GET /api/market</code>: Live FRED <code>MORTGAGE30US</code> 30Y rate (24h edge cache).</li>
+          <li><code>POST /api/comments/:id/agree</code> &amp; <code>/flag</code>: Upvotes and self-moderation.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>Verification &amp; Release</h2>
+        <ul>
+          <li><code>tests/*.test.mjs</code>: Node unit suite covering worker API, geocoding, price cuts, and extractors.</li>
+          <li><code>scripts/package-extension.sh</code>: Builds clean Chrome Web Store <code>.zip</code> in <code>dist/</code>.</li>
+          <li><code>docs/SDLC-PLAN.md</code> &amp; <code>docs/adr/</code>: SDLC contract and architecture decisions.</li>
+          <li>Chrome Web Store ID: <code>amdjblomajpflmdpmcmjgdhcfjcdjjga</code>.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Release Progression</h2>
+      <table>
+        <thead>
+          <tr><th>Version</th><th>Highlights</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>1.0.0</code></td><td>MV3 extension on Zillow, Redfin, Realtor.com + Cloudflare Worker &amp; D1</td><td>Published</td></tr>
+          <tr><td><code>1.1.0</code></td><td>7 portals, draggable pill, full-height panel, FRED 30Y rate, CPI check, 11 tags</td><td>Pending Review</td></tr>
+          <tr><td><code>1.2.0</code></td><td>Price-Cut Tracker banner, US Census Geocoder county links, comment flagging</td><td>Packaged</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
