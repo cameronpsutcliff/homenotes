@@ -39,19 +39,49 @@
     }
   }
 
-  chrome.storage.sync.get(['apiBase', 'handle', 'autoOpen'], (prefs) => {
+  function makeHandleToken() {
+    const arr = new Uint8Array(24);
+    crypto.getRandomValues(arr);
+    return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  let cachedToken = '';
+  chrome.storage.sync.get(['apiBase', 'handle', 'handleToken', 'autoOpen'], (prefs) => {
     const apiBase = (prefs.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '');
     handleEl.value = prefs.handle || '';
     autoOpenEl.checked = Boolean(prefs.autoOpen);
+    cachedToken = prefs.handleToken || makeHandleToken();
+    if (!prefs.handleToken) {
+      chrome.storage.sync.set({ handleToken: cachedToken });
+    }
     loadRecent(apiBase);
   });
 
-  saveBtn.addEventListener('click', () => {
+  saveBtn.addEventListener('click', async () => {
     const handle = handleEl.value.trim();
     const autoOpen = autoOpenEl.checked;
-    chrome.storage.sync.set({ handle, autoOpen }, () => {
-      saveMsg.textContent = 'Saved!';
-      setTimeout(() => { saveMsg.textContent = ''; }, 1800);
+    if (handle.length >= 2) {
+      try {
+        const tokenHash = await EXT.sha256Hex('hn-handle:' + cachedToken);
+        const res = await fetch(`${DEFAULT_API_BASE}/api/handles/claim`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ handle, token_hash: tokenHash }),
+        });
+        if (res.status === 409) {
+          const err = await res.json();
+          saveMsg.style.color = '#ff6b5e';
+          saveMsg.textContent = err.error || 'Handle already taken.';
+          return;
+        }
+      } catch {
+        // non-blocking if offline
+      }
+    }
+    chrome.storage.sync.set({ handle, handleToken: cachedToken, autoOpen }, () => {
+      saveMsg.style.color = '#34d399';
+      saveMsg.textContent = handle ? `Saved & claimed @${handle}` : 'Saved!';
+      setTimeout(() => { saveMsg.textContent = ''; }, 2400);
     });
   });
 })();

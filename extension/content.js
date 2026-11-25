@@ -25,12 +25,16 @@
   let state = {
     apiBase: DEFAULT_API_BASE,
     handle: '',
+    handleToken: '',
     autoOpen: false,
     open: false,
     wide: false,
     showCalc: false,
     priorPrice: '',
     priorYear: '',
+    draftHandle: '',
+    draftFairValue: '',
+    draftComment: '',
     pillPos: null,
     selectedTags: new Set(),
     meta: null,
@@ -43,7 +47,8 @@
     error: '',
     agreedIds: new Set(),
     flaggedIds: new Set(),
-    lastUrl: '',
+    minimizedKeys: new Set(),
+    lastRoute: '',
     hostEl: null,
     shadow: null,
   };
@@ -88,13 +93,24 @@
     });
   }
 
+  function makeHandleToken() {
+    const arr = new Uint8Array(24);
+    crypto.getRandomValues(arr);
+    return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
   async function loadPrefs() {
     const [syncPrefs, localPrefs] = await Promise.all([
-      getSyncStorage(['apiBase', 'handle', 'autoOpen']),
+      getSyncStorage(['apiBase', 'handle', 'handleToken', 'autoOpen']),
       getLocalStorage(['pillPos', 'wide']),
     ]);
     state.apiBase = (syncPrefs.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '');
     state.handle = syncPrefs.handle || '';
+    if (!state.draftHandle) state.draftHandle = state.handle;
+    state.handleToken = syncPrefs.handleToken || makeHandleToken();
+    if (!syncPrefs.handleToken) {
+      await setSyncStorage({ handleToken: state.handleToken });
+    }
     state.autoOpen = Boolean(syncPrefs.autoOpen);
     state.pillPos = localPrefs.pillPos || null;
     state.wide = Boolean(localPrefs.wide);
@@ -132,6 +148,9 @@
     render();
     try {
       const qs = new URLSearchParams({ address_key: state.meta.addressKey });
+      if (state.geo && state.geo.address_key && state.geo.address_key !== state.meta.addressKey) {
+        qs.set('alt_key', state.geo.address_key);
+      }
       const res = await fetch(`${state.apiBase}/api/comments?${qs.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       state.data = await res.json();
@@ -643,8 +662,8 @@
 
           <form class="hn-form" id="hn-form">
             <div class="hn-row">
-              <input class="hn-input" id="hn-handle" placeholder="Your handle (e.g. buyer_id)" value="${EXT.escapeHtml(state.handle)}" required maxlength="40" style="flex:1;" />
-              <input class="hn-input" id="hn-fv" placeholder="What I'd pay ($)" inputmode="numeric" maxlength="12" style="width:140px;" />
+              <input class="hn-input" id="hn-handle" placeholder="Your unique handle (e.g. buyer_id)" value="${EXT.escapeHtml(state.draftHandle || state.handle)}" required maxlength="40" style="flex:1;" />
+              <input class="hn-input" id="hn-fv" placeholder="What I'd pay ($)" value="${EXT.escapeHtml(state.draftFairValue)}" inputmode="numeric" maxlength="12" style="width:140px;" />
             </div>
             <div class="hn-chip-picker" id="hn-chips">
               ${SIGNAL_TAGS
@@ -654,7 +673,7 @@
                 )
                 .join('')}
             </div>
-            <textarea class="hn-textarea" id="hn-body" rows="2" placeholder="Reality check on price, condition, smell, flip quality, comps, or undisclosed issues..." required maxlength="800"></textarea>
+            <textarea class="hn-textarea" id="hn-body" rows="2" placeholder="Reality check on price, condition, smell, flip quality, comps, or undisclosed issues..." required maxlength="800">${EXT.escapeHtml(state.draftComment)}</textarea>
             <button class="hn-submit" id="hn-submit" type="submit">Post Buyer Reality Check</button>
           </form>
 
@@ -672,7 +691,20 @@
   function bindEvents() {
     const s = state.shadow;
     const closeBtn = s.getElementById('hn-close');
-    if (closeBtn) closeBtn.addEventListener('click', () => { state.open = false; render(); });
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => {
+        state.open = false;
+        if (state.meta && state.meta.addressKey) state.minimizedKeys.add(state.meta.addressKey);
+        render();
+      });
+    }
+
+    const handleEl = s.getElementById('hn-handle');
+    if (handleEl) handleEl.addEventListener('input', (e) => { state.draftHandle = e.target.value; });
+    const fvEl = s.getElementById('hn-fv');
+    if (fvEl) fvEl.addEventListener('input', (e) => { state.draftFairValue = e.target.value; });
+    const bodyEl = s.getElementById('hn-body');
+    if (bodyEl) bodyEl.addEventListener('input', (e) => { state.draftComment = e.target.value; });
 
     const wideBtn = s.getElementById('hn-wide');
     if (wideBtn) {
@@ -708,9 +740,13 @@
     s.querySelectorAll('[data-tag]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const tag = btn.getAttribute('data-tag');
-        if (state.selectedTags.has(tag)) state.selectedTags.delete(tag);
-        else if (state.selectedTags.size < 6) state.selectedTags.add(tag);
-        render();
+        if (state.selectedTags.has(tag)) {
+          state.selectedTags.delete(tag);
+          btn.classList.remove('sel');
+        } else if (state.selectedTags.size < 6) {
+          state.selectedTags.add(tag);
+          btn.classList.add('sel');
+        }
       });
     });
 
@@ -781,16 +817,19 @@
         if (!handle || !comment) return;
 
         state.handle = handle;
-        await setSyncStorage({ handle });
+        state.draftHandle = handle;
+        await setSyncStorage({ handle, handleToken: state.handleToken });
 
         submitBtn.disabled = true;
         submitBtn.textContent = 'Posting...';
         try {
+          const handleTokenHash = await EXT.sha256Hex('hn-handle:' + state.handleToken);
+          const canonicalKey = (state.geo && state.geo.address_key) ? state.geo.address_key : state.meta.addressKey;
           const res = await fetch(`${state.apiBase}/api/comments`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              address_key: state.meta.addressKey,
+              address_key: canonicalKey,
               address_display: state.meta.address,
               listed_price: state.meta.listedPrice,
               listed_price_num: state.meta.listedPriceNum,
@@ -800,13 +839,22 @@
               listing_url: state.meta.url,
               site: state.meta.site,
               handle,
+              handle_token_hash: handleTokenHash,
               fair_value: fairValue,
               tags: Array.from(state.selectedTags),
               comment,
             }),
           });
+          if (res.status === 409) {
+            const errData = await res.json().catch(() => ({}));
+            state.error = errData.error || 'That handle is already claimed. Choose a different handle.';
+            render();
+            return;
+          }
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           state.selectedTags.clear();
+          state.draftFairValue = '';
+          state.draftComment = '';
           state.authorFilter = null;
           await refreshComments();
         } catch {
@@ -828,7 +876,8 @@
 
   async function mountForCurrentPage() {
     const url = location.href;
-    state.lastUrl = url;
+    const route = EXT.canonicalPageRoute(url);
+    state.lastRoute = route;
 
     if (!EXT.isListingUrl(url)) {
       unmount();
@@ -843,12 +892,19 @@
     }
     if (!meta.addressKey) return;
 
+    // Never re-open or reset UI when staying on the same property (e.g. photo gallery clicks)
+    if (state.meta && state.meta.addressKey === meta.addressKey && state.hostEl) {
+      return;
+    }
+
     state.meta = meta;
     state.geo = null;
     state.authorFilter = null;
+    state.draftFairValue = '';
+    state.draftComment = '';
     state.priorPrice = meta.priorSale?.price ? String(meta.priorSale.price) : '';
     state.priorYear = meta.priorSale?.year ? String(meta.priorSale.year) : '';
-    state.open = state.autoOpen;
+    state.open = state.autoOpen && !state.minimizedKeys.has(meta.addressKey);
 
     if (!state.hostEl) {
       const host = document.createElement('div');
@@ -859,28 +915,34 @@
     }
 
     render();
-    await Promise.all([refreshComments(), fetchMarketRate(), fetchCensusGeocode()]);
+    await fetchCensusGeocode();
+    await Promise.all([refreshComments(), fetchMarketRate()]);
     render();
+  }
+
+  function checkRouteChange() {
+    const route = EXT.canonicalPageRoute(location.href);
+    if (route !== state.lastRoute) {
+      mountForCurrentPage();
+    }
   }
 
   const origPush = history.pushState;
   history.pushState = function (...args) {
     const ret = origPush.apply(this, args);
-    setTimeout(() => { if (location.href !== state.lastUrl) mountForCurrentPage(); }, 500);
+    setTimeout(checkRouteChange, 500);
     return ret;
   };
   const origReplace = history.replaceState;
   history.replaceState = function (...args) {
     const ret = origReplace.apply(this, args);
-    setTimeout(() => { if (location.href !== state.lastUrl) mountForCurrentPage(); }, 500);
+    setTimeout(checkRouteChange, 500);
     return ret;
   };
   window.addEventListener('popstate', () => {
-    setTimeout(() => { if (location.href !== state.lastUrl) mountForCurrentPage(); }, 500);
+    setTimeout(checkRouteChange, 500);
   });
-  setInterval(() => {
-    if (location.href !== state.lastUrl) mountForCurrentPage();
-  }, 1500);
+  setInterval(checkRouteChange, 1500);
 
   mountForCurrentPage();
 })();

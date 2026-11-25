@@ -26,6 +26,17 @@
     highway: 'hwy', hwy: 'hwy',
     north: 'n', south: 's', east: 'e', west: 'w',
     northeast: 'ne', northwest: 'nw', southeast: 'se', southwest: 'sw',
+    alabama: 'al', alaska: 'ak', arizona: 'az', arkansas: 'ar', california: 'ca',
+    colorado: 'co', connecticut: 'ct', delaware: 'de', florida: 'fl', georgia: 'ga',
+    hawaii: 'hi', idaho: 'id', illinois: 'il', indiana: 'in', iowa: 'ia',
+    kansas: 'ks', kentucky: 'ky', louisiana: 'la', maine: 'me', maryland: 'md',
+    massachusetts: 'ma', michigan: 'mi', minnesota: 'mn', mississippi: 'ms', missouri: 'mo',
+    montana: 'mt', nebraska: 'ne', nevada: 'nv', 'new hampshire': 'nh', 'new jersey': 'nj',
+    'new mexico': 'nm', 'new york': 'ny', 'north carolina': 'nc', 'north dakota': 'nd',
+    ohio: 'oh', oklahoma: 'ok', oregon: 'or', pennsylvania: 'pa', 'rhode island': 'ri',
+    'south carolina': 'sc', 'south dakota': 'sd', tennessee: 'tn', texas: 'tx', utah: 'ut',
+    vermont: 'vt', virginia: 'va', washington: 'wa', 'west virginia': 'wv', wisconsin: 'wi',
+    wyoming: 'wy',
   };
 
   // Official US BLS CPI-U annual average index (1982-84 = 100)
@@ -42,6 +53,8 @@
   function normalizeAddressKey(raw) {
     return String(raw || '')
       .toLowerCase()
+      .replace(/\b(\d{5})-\d{4}\b/g, '$1')
+      .replace(/\b(united states|usa)\b/g, ' ')
       .replace(/[^a-z0-9\s]/g, ' ')
       .replace(/\b([a-z]+)\b/g, (word) => STREET_MAP[word] || word)
       .replace(/\s+/g, ' ')
@@ -49,12 +62,25 @@
       .slice(0, 160);
   }
 
+  function canonicalPageRoute(urlString) {
+    try {
+      const u = new URL(urlString);
+      // Strip query params (?mmlb=g,1 photo gallery), hashes, and trailing photo/media subpaths
+      const cleanPath = u.pathname
+        .replace(/\/(photos|media|gallery|street-view|map)\/?$/i, '')
+        .replace(/\/+$/, '');
+      return `${u.origin.toLowerCase()}${cleanPath}`;
+    } catch {
+      return String(urlString || '');
+    }
+  }
+
   function isListingUrl(urlString) {
     try {
       const u = new URL(urlString);
       const host = u.hostname.replace(/^www\./, '').toLowerCase();
       const path = u.pathname;
-      if (host === 'zillow.com') return /^\/homedetails\//i.test(path);
+      if (host === 'zillow.com') return /^\/(homedetails|community|b)\//i.test(path);
       if (host === 'realtor.com') return /^\/realestateandhomes-detail\//i.test(path);
       if (host === 'redfin.com') return /\/home\/\d+/i.test(path);
       if (host === 'homes.com') return /^\/property\//i.test(path);
@@ -230,20 +256,31 @@
       address = pickFirstText(doc, [
         '[data-testid="bdp-building-address"]',
         '[data-rf-test-id="abp-streetLine"]',
+        '.street-address',
         '[data-testid="address-line-ldp"]',
         '[data-testid="home-details-summary-headline"]',
         '.property-info-address',
         'h1',
       ]);
       if (site === 'redfin.com') {
-        const cityState = pickFirstText(doc, ['[data-rf-test-id="abp-cityStateZip"]']);
-        if (address && cityState && !address.includes(cityState)) {
+        const cityState = pickFirstText(doc, [
+          '[data-rf-test-id="abp-cityStateZip"]',
+          '.bp-cityStateZip',
+          '.dp-subtext',
+        ]);
+        if (address && cityState && !address.toLowerCase().includes(cityState.toLowerCase())) {
           address = `${address}, ${cityState}`;
         }
       }
     }
-    if (!address && doc && doc.title) {
-      address = doc.title.split('|')[0].split(' - ')[0].trim();
+    // If address still lacks a 5-digit ZIP, check document.title (Redfin/Zillow/Realtor titles include full Street, City, ST ZIP)
+    if (doc && doc.title && (!address || !/\b\d{5}\b/.test(address))) {
+      const titleAddr = doc.title.split('|')[0].split(' - ')[0].trim();
+      if (/\b\d{5}\b/.test(titleAddr) && /\d/.test(titleAddr)) {
+        address = titleAddr;
+      } else if (!address) {
+        address = titleAddr;
+      }
     }
 
     const bodyText = (doc && doc.body && (doc.body.innerText || doc.body.textContent)) || '';
@@ -363,9 +400,28 @@
     return lines.join('\n');
   }
 
+  async function sha256Hex(input) {
+    const clean = String(input || '').trim();
+    if (!clean) return '';
+    if (typeof crypto !== 'undefined' && crypto.subtle) {
+      const enc = new TextEncoder().encode(clean);
+      const buf = await crypto.subtle.digest('SHA-256', enc);
+      return Array.from(new Uint8Array(buf))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+    let h = 2166136261;
+    for (let i = 0; i < clean.length; i++) {
+      h ^= clean.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return ('00000000' + (h >>> 0).toString(16)).slice(-8);
+  }
+
   return {
     CPI_ANNUAL,
     normalizeAddressKey,
+    canonicalPageRoute,
     isListingUrl,
     parsePriceNumber,
     formatCurrency,
@@ -377,5 +433,6 @@
     extractListingMeta,
     buildCrossSiteLinks,
     buildObsidianMarkdown,
+    sha256Hex,
   };
 });

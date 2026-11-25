@@ -21,6 +21,17 @@ const STREET_MAP = {
   highway: 'hwy', hwy: 'hwy',
   north: 'n', south: 's', east: 'e', west: 'w',
   northeast: 'ne', northwest: 'nw', southeast: 'se', southwest: 'sw',
+  alabama: 'al', alaska: 'ak', arizona: 'az', arkansas: 'ar', california: 'ca',
+  colorado: 'co', connecticut: 'ct', delaware: 'de', florida: 'fl', georgia: 'ga',
+  hawaii: 'hi', idaho: 'id', illinois: 'il', indiana: 'in', iowa: 'ia',
+  kansas: 'ks', kentucky: 'ky', louisiana: 'la', maine: 'me', maryland: 'md',
+  massachusetts: 'ma', michigan: 'mi', minnesota: 'mn', mississippi: 'ms', missouri: 'mo',
+  montana: 'mt', nebraska: 'ne', nevada: 'nv', 'new hampshire': 'nh', 'new jersey': 'nj',
+  'new mexico': 'nm', 'new york': 'ny', 'north carolina': 'nc', 'north dakota': 'nd',
+  ohio: 'oh', oklahoma: 'ok', oregon: 'or', pennsylvania: 'pa', 'rhode island': 'ri',
+  'south carolina': 'sc', 'south dakota': 'sd', tennessee: 'tn', texas: 'tx', utah: 'ut',
+  vermont: 'vt', virginia: 'va', washington: 'wa', 'west virginia': 'wv', wisconsin: 'wi',
+  wyoming: 'wy',
 };
 
 const ALLOWED_TAGS = new Set([
@@ -40,6 +51,8 @@ const ALLOWED_TAGS = new Set([
 export function normalizeAddressKey(raw) {
   return String(raw || '')
     .toLowerCase()
+    .replace(/\b(\d{5})-\d{4}\b/g, '$1')
+    .replace(/\b(united states|usa)\b/g, ' ')
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\b([a-z]+)\b/g, (word) => STREET_MAP[word] || word)
     .replace(/\s+/g, ' ')
@@ -321,7 +334,37 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/health' && request.method === 'GET') {
-      return json({ ok: true, service: 'homenotes-api', version: '1.2.0' });
+      return json({ ok: true, service: 'homenotes-api', version: '1.3.0' });
+    }
+
+    if (url.pathname === '/api/handles/claim' && request.method === 'POST') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: 'Invalid JSON body' }, 400);
+      }
+      const handle = sanitizeText(body.handle, 40);
+      const tokenHash = String(body.token_hash || '').trim().slice(0, 64);
+      if (!handle || handle.length < 2 || !tokenHash) {
+        return json({ error: 'handle (2+ chars) and token_hash are required' }, 400);
+      }
+      const lower = handle.toLowerCase();
+      const existing = await env.DB.prepare('SELECT handle_display, token_hash FROM handles WHERE handle_lower = ?')
+        .bind(lower)
+        .first();
+      if (existing) {
+        if (existing.token_hash === tokenHash) {
+          return json({ ok: true, handle: existing.handle_display, owned: true });
+        }
+        return json({ error: `Handle "${handle}" is already claimed by another user. Choose a different handle.` }, 409);
+      }
+      await env.DB.prepare(
+        'INSERT INTO handles (handle_lower, handle_display, token_hash, created_at) VALUES (?, ?, ?, ?)'
+      )
+        .bind(lower, handle, tokenHash, new Date().toISOString())
+        .run();
+      return json({ ok: true, handle, owned: true, claimed: true }, 201);
     }
 
     if (url.pathname === '/api/market' && request.method === 'GET') {
@@ -365,18 +408,35 @@ export default {
       }
 
       const key = normalizeAddressKey(url.searchParams.get('address_key'));
+      const altKey = normalizeAddressKey(url.searchParams.get('alt_key'));
       if (!key) return json({ error: 'address_key or handle is required' }, 400);
 
-      const { results } = await env.DB.prepare(
-        `SELECT id, address_key, address_display, listed_price, listed_price_num, beds, baths, sqft,
-                listing_url, site, handle, fair_value, tags, comment, agrees, created_at
-         FROM comments
-         WHERE address_key = ? AND scope = 'public' AND room_hash = '' AND COALESCE(flags, 0) < 5
-         ORDER BY created_at DESC
-         LIMIT 100`
-      )
-        .bind(key)
-        .all();
+      let results;
+      if (altKey && altKey !== key) {
+        const q = await env.DB.prepare(
+          `SELECT id, address_key, address_display, listed_price, listed_price_num, beds, baths, sqft,
+                  listing_url, site, handle, fair_value, tags, comment, agrees, created_at
+           FROM comments
+           WHERE (address_key = ? OR address_key = ?) AND scope = 'public' AND room_hash = '' AND COALESCE(flags, 0) < 5
+           ORDER BY created_at DESC
+           LIMIT 100`
+        )
+          .bind(key, altKey)
+          .all();
+        results = q.results;
+      } else {
+        const q = await env.DB.prepare(
+          `SELECT id, address_key, address_display, listed_price, listed_price_num, beds, baths, sqft,
+                  listing_url, site, handle, fair_value, tags, comment, agrees, created_at
+           FROM comments
+           WHERE address_key = ? AND scope = 'public' AND room_hash = '' AND COALESCE(flags, 0) < 5
+           ORDER BY created_at DESC
+           LIMIT 100`
+        )
+          .bind(key)
+          .all();
+        results = q.results;
+      }
 
       const comments = (results || []).map(hydrateRow);
       return json({
@@ -423,6 +483,25 @@ export default {
 
       if (!key || !handle || !comment) {
         return json({ error: 'address_key, handle, and comment are required' }, 400);
+      }
+
+      // Enforce unique committed handle ownership when client sends token_hash
+      const tokenHash = String(body.handle_token_hash || '').trim().slice(0, 64);
+      if (tokenHash) {
+        const lower = handle.toLowerCase();
+        const existingHandle = await env.DB.prepare('SELECT handle_display, token_hash FROM handles WHERE handle_lower = ?')
+          .bind(lower)
+          .first();
+        if (existingHandle && existingHandle.token_hash !== tokenHash) {
+          return json({ error: `Handle "${handle}" is already claimed by another user. Choose a different handle.` }, 409);
+        }
+        if (!existingHandle) {
+          await env.DB.prepare(
+            'INSERT INTO handles (handle_lower, handle_display, token_hash, created_at) VALUES (?, ?, ?, ?)'
+          )
+            .bind(lower, handle, tokenHash, new Date().toISOString())
+            .run();
+        }
       }
 
       const createdAt = new Date().toISOString();

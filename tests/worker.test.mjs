@@ -10,14 +10,20 @@ import worker, {
 
 function makeMockEnv() {
   const rows = [];
+  const handles = new Map();
   return {
     rows,
+    handles,
     DB: {
       prepare(sql) {
         return {
           bind(...args) {
             return {
               async run() {
+                if (sql.includes('INSERT INTO handles')) {
+                  handles.set(args[0], { handle_display: args[1], token_hash: args[2], created_at: args[3] });
+                  return { success: true };
+                }
                 if (sql.includes('INSERT INTO comments')) {
                   const id = rows.length + 1;
                   rows.push({
@@ -57,6 +63,9 @@ function makeMockEnv() {
                 return { success: true };
               },
               async first() {
+                if (sql.includes('FROM handles WHERE handle_lower = ?')) {
+                  return handles.get(args[0]) || null;
+                }
                 if (sql.includes('WHERE id = ?')) {
                   return rows.find((r) => r.id === args[0]) || null;
                 }
@@ -66,6 +75,9 @@ function makeMockEnv() {
                 const visible = rows.filter((r) => (r.flags || 0) < 5);
                 if (sql.includes('LOWER(handle) = LOWER(?)')) {
                   return { results: visible.filter((r) => r.handle.toLowerCase() === String(args[0]).toLowerCase()).reverse() };
+                }
+                if (sql.includes('(address_key = ? OR address_key = ?)')) {
+                  return { results: visible.filter((r) => r.address_key === args[0] || r.address_key === args[1]).reverse() };
                 }
                 if (sql.includes('WHERE address_key = ?')) {
                   return { results: visible.filter((r) => r.address_key === args[0]).reverse() };
@@ -191,6 +203,27 @@ test('POST, GET, /api/recent, +1 agree, /health, and /privacy work cleanly', asy
     )
   ).json();
   assert.equal(afterFlag.comments.length, 0);
+
+  // Unique committed handle enforcement
+  const claim1 = await worker.fetch(
+    new Request('https://homenotes.cameronsutcliff.com/api/handles/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ handle: 'texasred', token_hash: 'hash_owner_1' }),
+    }),
+    env
+  );
+  assert.equal(claim1.status, 201);
+
+  const hijack = await worker.fetch(
+    new Request('https://homenotes.cameronsutcliff.com/api/handles/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ handle: 'TexasRed', token_hash: 'hash_imposter_2' }),
+    }),
+    env
+  );
+  assert.equal(hijack.status, 409);
 
   const healthRes = await worker.fetch(new Request('https://homenotes.cameronsutcliff.com/health'), env);
   assert.equal(healthRes.status, 200);

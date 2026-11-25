@@ -5,8 +5,9 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const EXT = require('../extension/lib/extractor.js');
 
-test('isListingUrl matches property detail URLs across all 7 real estate sites', () => {
+test('isListingUrl matches property detail URLs across all 7 real estate sites including Zillow community', () => {
   assert.equal(EXT.isListingUrl('https://www.zillow.com/homedetails/123-Main-St/999_zpid/'), true);
+  assert.equal(EXT.isListingUrl('https://www.zillow.com/community/honeysuckle-glade/12345_plid/'), true);
   assert.equal(EXT.isListingUrl('https://www.zillow.com/hayden-id/'), false);
 
   assert.equal(EXT.isListingUrl('https://www.redfin.com/ID/Hayden/123-N-Main-St-83835/home/12345678'), true);
@@ -19,6 +20,35 @@ test('isListingUrl matches property detail URLs across all 7 real estate sites',
   assert.equal(EXT.isListingUrl('https://www.trulia.com/home/123-n-main-st-hayden-id-83835-12345'), true);
   assert.equal(EXT.isListingUrl('https://www.har.com/homedetail/123-main-st-houston-tx-77001/1234567'), true);
   assert.equal(EXT.isListingUrl('https://realestatecenter.bankofamerica.com/property/123-main-st'), true);
+});
+
+test('canonicalPageRoute ignores photo gallery query params and hashes', () => {
+  const base = EXT.canonicalPageRoute('https://www.zillow.com/homedetails/412-Paradise-Canyon-Cir/123_zpid/');
+  const photo1 = EXT.canonicalPageRoute('https://www.zillow.com/homedetails/412-Paradise-Canyon-Cir/123_zpid/?mmlb=g,0');
+  const photo2 = EXT.canonicalPageRoute('https://www.zillow.com/homedetails/412-Paradise-Canyon-Cir/123_zpid/?mmlb=g,5#gallery');
+  const photoPath = EXT.canonicalPageRoute('https://www.zillow.com/homedetails/412-Paradise-Canyon-Cir/123_zpid/photos');
+  assert.equal(base, photo1);
+  assert.equal(base, photo2);
+  assert.equal(base, photoPath);
+});
+
+test('normalizes full state names, ZIP+4, and Redfin title fallback identically across sites', () => {
+  const z = EXT.normalizeAddressKey('412 Paradise Canyon Cir, Paradise, TX 76073');
+  const r = EXT.normalizeAddressKey('412 Paradise Canyon Circle, Paradise, Texas 76073-1234, USA');
+  assert.equal(z, r);
+
+  // Redfin DOM with street-only h1 should use full title containing ZIP
+  const redfinDoc = {
+    title: '412 Paradise Canyon Cir, Paradise, TX 76073 | MLS# 20481 | Redfin',
+    body: { innerText: '$579,900 4 bd 3 ba 2,400 sqft' },
+    querySelectorAll() { return []; },
+    querySelector(sel) {
+      if (sel === '[data-rf-test-id="abp-streetLine"]') return { innerText: '412 Paradise Canyon Cir' };
+      return null;
+    },
+  };
+  const meta = EXT.extractListingMeta(redfinDoc, 'https://www.redfin.com/TX/Paradise/412-Paradise-Canyon-Cir-76073/home/99999');
+  assert.equal(meta.addressKey, z);
 });
 
 test('extractListingMeta parses JSON-LD, price per sqft, and prior sale', () => {

@@ -26,3 +26,10 @@ CREATE INDEX IF NOT EXISTS idx_comments_lookup
 
 CREATE INDEX IF NOT EXISTS idx_comments_recent
   ON comments(scope, room_hash, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS handles (
+  handle_lower TEXT PRIMARY KEY,
+  handle_display TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
