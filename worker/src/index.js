@@ -3,6 +3,20 @@
  * Platform-independent public buyer reality-check comments anchored to normalized
  * property addresses across Zillow, Redfin, Realtor.com, Homes.com, Trulia, HAR, and BofA.
  */
+import { renderHomePage, renderPropertyPage } from './web.js';
+
+// In-isolate sliding window burst guard (protects against rapid bot floods at $0)
+const ipPostTimestamps = new Map();
+function checkRateLimit(ip, maxPerHour = 15) {
+  if (!ip) return true;
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const arr = (ipPostTimestamps.get(ip) || []).filter((t) => now - t < windowMs);
+  if (arr.length >= maxPerHour) return false;
+  arr.push(now);
+  ipPostTimestamps.set(ip, arr);
+  return true;
+}
 
 const STREET_MAP = {
   street: 'st', st: 'st',
@@ -333,6 +347,47 @@ export default {
 
     const url = new URL(request.url);
 
+    if (url.pathname === '/' && request.method === 'GET') {
+      const [{ results }, market] = await Promise.all([
+        env.DB.prepare(
+          `SELECT id, address_key, address_display, listed_price, site, handle, fair_value,
+                  tags, comment, agrees, listing_url, created_at
+           FROM comments
+           WHERE scope = 'public' AND room_hash = '' AND COALESCE(flags, 0) < 5
+           ORDER BY created_at DESC
+           LIMIT 25`
+        ).all(),
+        fetchFredMortgageRate(),
+      ]);
+      return new Response(renderHomePage((results || []).map(hydrateRow), market), {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60' },
+      });
+    }
+
+    const propPageMatch = url.pathname.match(/^\/p\/(.+)$/);
+    if (propPageMatch && request.method === 'GET') {
+      const rawParam = decodeURIComponent(propPageMatch[1]);
+      const key = normalizeAddressKey(rawParam);
+      if (!key) return Response.redirect(new URL('/', url).toString(), 302);
+      const { results } = await env.DB.prepare(
+        `SELECT id, address_key, address_display, listed_price, listed_price_num, site, handle,
+                fair_value, tags, comment, agrees, listing_url, created_at
+         FROM comments
+         WHERE address_key = ? AND scope = 'public' AND room_hash = '' AND COALESCE(flags, 0) < 5
+         ORDER BY created_at DESC
+         LIMIT 100`
+      )
+        .bind(key)
+        .all();
+      const comments = (results || []).map(hydrateRow);
+      const display = comments[0]?.address_display || rawParam;
+      return new Response(renderPropertyPage(display, key, comments, computeSummary(comments)), {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60' },
+      });
+    }
+
     if (url.pathname === '/health' && request.method === 'GET') {
       return json({ ok: true, service: 'homenotes-api', version: '1.3.0' });
     }
@@ -460,6 +515,10 @@ export default {
     }
 
     if (url.pathname === '/api/comments' && request.method === 'POST') {
+      const clientIp = request.headers.get('cf-connecting-ip') || '';
+      if (!checkRateLimit(clientIp, 15)) {
+        return json({ error: 'Rate limit exceeded. Please wait a bit before posting again.' }, 429);
+      }
       let body;
       try {
         body = await request.json();

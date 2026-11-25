@@ -1,0 +1,49 @@
+name: HomeNotes CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run unit tests
+        run: node --test tests/*.test.mjs
+
+      - name: Validate manifest.json Chrome Web Store constraints
+        run: |
+          node -e '
+            const m = require("./extension/manifest.json");
+            if (m.manifest_version !== 3) throw new Error("Must be MV3");
+            if (!m.description || m.description.length > 132) {
+              throw new Error(`manifest.description too long: ${m.description?.length} (max 132)`);
+            }
+            console.log(`Manifest OK: v${m.version} (description ${m.description.length}/132 chars)`);
+          '
+
+      - name: Enforce zero em dashes (U+2014)
+        run: |
+          python3 -c '
+            import pathlib, sys
+            bad = []
+            for p in pathlib.Path(".").rglob("*"):
+              if p.is_file() and p.suffix in {".js",".mjs",".html",".md",".json",".sql",".toml",".yml"} and ".git" not in p.parts:
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+                if "\u2014" in txt:
+                  bad.append(str(p))
+            if bad:
+              print("Em dash found in:", bad)
+              sys.exit(1)
+            print("PASS: 0 em dashes across repository")
+          '
+
+      - name: Package Chrome Web Store zip
+        run: ./scripts/package-extension.sh
